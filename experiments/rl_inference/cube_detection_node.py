@@ -38,6 +38,7 @@ from pose_estimation.maskrcnn_detection import maskrcnn_detection
 from rotation_utils import (
     rotation_matrix_to_quaternion,
     create_transform_matrix,
+    snap_to_cube_symmetry,
 )
 
 # Import shared camera listener
@@ -152,6 +153,7 @@ class CubeDetectionNode(Node):
         self.kf_initialized = False
         self.kf_last_time = None
         self.last_filtered_quat = None
+        self.last_raw_quat = None  # last detected orientation after snapping, the reference for the next one
 
         self.get_logger().info("Cube detection node initialized successfully")
         self.get_logger().info(f"CUDA available: {torch.cuda.is_available()}")
@@ -388,6 +390,14 @@ class CubeDetectionNode(Node):
             # Publish TF: camera_frame → cube
             qx, qy, qz, qw = rotation_matrix_to_quaternion(cam_T_cube[:3, :3])
             t_cam_cube = cam_T_cube[:3, 3]
+
+            # Remove symmetric flips: compare with the last raw orientation, not the filtered one, which lags behind
+            # (about 34 deg at 2 rad/s) and would leave too little margin to the 45 deg limit.
+            quat = np.array([qx, qy, qz, qw], dtype=np.float64)
+            if self.last_raw_quat is not None:
+                quat = snap_to_cube_symmetry(quat, self.last_raw_quat)
+            self.last_raw_quat = quat
+            qx, qy, qz, qw = quat.tolist()
 
             # === Optional Kalman filtering for pose ===
             if self.use_kalman:
