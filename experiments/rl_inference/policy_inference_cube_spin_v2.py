@@ -83,13 +83,13 @@ class PolicyInferenceNodeV2(Node):
         self.declare_parameter("policy_hz", 20.0)          # the task runs the policy at 20 Hz (decimation 6, dt 1/120)
         self.declare_parameter("action_alpha", 0.2)        # moving average of the task's action term
         self.declare_parameter("velocity_obs_scale", 0.2)  # joint_vel observation scale in the task
-        self.declare_parameter("goal_ang_vel", 1.0)        # rad/s about z; trained on |w| in [0.9, 1.5] (either sign = direction)
-        self.declare_parameter("goal_flip_period_s", 0.0)  # > 0: flip the spin direction every this many seconds
+        self.declare_parameter("goal_ang_vel", 2.0)        # rad/s about z; trained on w in [1.5, 2.5], always +z (fixed_direction=1.0)
+        self.declare_parameter("goal_flip_period_s", 0.0)  # > 0: flip the spin direction every this many seconds (-z is outside training)
         self.declare_parameter("dry_run", False)           # true: compute and log actions, but do not command the hand
         self.declare_parameter("log_period_s", 1.0)        # print the observation summary this often (0: never)
         self.declare_parameter("csv_log_path", "")         # non-empty: log observations and commands to this CSV
         self.declare_parameter("command_topic", "/right/hand/policy_output")  # what hand_control_node subscribes to
-
+        self.declare_parameter("wrist_lock_deg", float("nan"))  # finite: hold the wrist at this angle (deg), ignoring the policy
         # Frame IDs
         self.declare_parameter("hand_frame_id", "hand_root")
         self.declare_parameter("cube_frame_id", "cube")
@@ -117,6 +117,10 @@ class PolicyInferenceNodeV2(Node):
         self.robot_to_usd_idx = [self.joint_order.index(name) for name in self.joint_order_usd]
         self.usd_to_robot_idx = [self.joint_order_usd.index(name) for name in self.joint_order]
         self.limits_usd = np.deg2rad(np.array(list(JOINT_LIMITS_USD_DEG.values()), dtype=np.float32))
+        self.wrist_lock_deg = float(self.get_parameter("wrist_lock_deg").value)
+        self.wrist_idx = self.joint_order_usd.index("wrist")
+        if np.isfinite(self.wrist_lock_deg):
+            self.get_logger().info(f"Wrist locked at {self.wrist_lock_deg:.1f} deg (policy wrist output ignored)")
 
         # ========== Policy ==========
         if not self.policy_ckpt_path:
@@ -254,7 +258,12 @@ class PolicyInferenceNodeV2(Node):
         self.last_action_usd = action_usd
 
         # === action processing, as the task's EMAJointPositionToLimitsAction ===
+                # === action processing, as the task's EMAJointPositionToLimitsAction ===
         target_usd = self.denormalize(np.clip(action_usd, -1.0, 1.0))
+        if np.isfinite(self.wrist_lock_deg):
+            # hold the wrist: replace the policy's wrist target before the moving average,
+            # so at the start the wrist ramps smoothly to the locked angle instead of jumping
+            target_usd[self.wrist_idx] = np.deg2rad(self.wrist_lock_deg)
         target_usd = self.action_alpha * target_usd + (1.0 - self.action_alpha) * self.last_joint_cmd_usd
         target_usd = np.clip(target_usd, self.limits_usd[:, 0], self.limits_usd[:, 1]).astype(np.float32)
         self.last_joint_cmd_usd = target_usd
