@@ -49,5 +49,11 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
+# camera calibration (cam_T_tag), the default for cube_spin_v2.launch.py's `calibration` argument
+install(FILES
+  rl_inference/camera_extrinsics.npy
+  DESTINATION share/${PROJECT_NAME}/rl_inference
+)
+
 
 ament_package()

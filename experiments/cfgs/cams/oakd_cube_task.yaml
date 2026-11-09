@@ -2,3 +2,6 @@
 #   name: bottom_view
 18443010310CC71200:
   name: bottom_view
+# laptop camera; only cameras that are actually plugged in are opened
+1944301041E91D1300:
+  name: bottom_view

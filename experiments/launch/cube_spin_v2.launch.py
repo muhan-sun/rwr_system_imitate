@@ -35,7 +35,8 @@ def generate_launch_description():
     # ===== Calibration and Policy Arguments =====
     calibration_arg = DeclareLaunchArgument(
         'calibration',
-        default_value='/home/imitate/ros_ws/src/rwr_system_imitate/experiments/rl_inference/camera_extrinsics.npy',
+        default_value=os.path.join(
+            get_package_share_directory('experiments'), 'rl_inference', 'camera_extrinsics.npy'),
         description='Path to camera calibration file (cam_T_tag as .npy)'
     )
     
@@ -60,13 +61,13 @@ def generate_launch_description():
 
     # ===== Tag to Hand Transform Arguments =====
     # Pose of the tag seen from the mount (mount_T_tag): x/y/z along the mount's axes, roll/pitch/yaw of the tag relative to them
-    # NOTE: these defaults were measured for the ORCA v1b mount. Measure them again for your ORCA v2 setup.
-    hand_to_tag_x_arg = DeclareLaunchArgument('hand_to_tag_x', default_value='0.0')
+    # Tuned for the ORCA v2 mount by overlaying the hand model on the camera image (bags/check_hand_calibration.py).
+    hand_to_tag_x_arg = DeclareLaunchArgument('hand_to_tag_x', default_value='-0.014')
     hand_to_tag_y_arg = DeclareLaunchArgument('hand_to_tag_y', default_value='-0.0452')
-    hand_to_tag_z_arg = DeclareLaunchArgument('hand_to_tag_z', default_value='0.4418')
+    hand_to_tag_z_arg = DeclareLaunchArgument('hand_to_tag_z', default_value='0.41')
     hand_to_tag_roll_arg = DeclareLaunchArgument('hand_to_tag_roll', default_value='60')
-    hand_to_tag_pitch_arg = DeclareLaunchArgument('hand_to_tag_pitch', default_value='0')
-    hand_to_tag_yaw_arg = DeclareLaunchArgument('hand_to_tag_yaw', default_value='0')
+    hand_to_tag_pitch_arg = DeclareLaunchArgument('hand_to_tag_pitch', default_value='-1')
+    hand_to_tag_yaw_arg = DeclareLaunchArgument('hand_to_tag_yaw', default_value='3')
     
     # ===== Camera Arguments =====
     camera_name_arg = DeclareLaunchArgument(
