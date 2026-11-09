@@ -6,3 +6,6 @@ logs/chirp_v2/
 # cube detector model files, downloaded with experiments/rl_inference/pose_estimation/download_models.sh
 *.ckpt
 *.pth.tar
+
+bags/
+Policy/
