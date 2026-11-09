@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 
+# Cap the native thread pools before numpy/cv2/depthai load them: otherwise OpenMP starts one
+# busy-waiting thread per core (~740% CPU on a 32-core machine), which starves the driver loop and
+# drops frames (/oakd_*/color at ~14 Hz instead of 30 Hz).
+import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 import rclpy
 from rclpy.node import Node
 import numpy as np
 import cv2
+cv2.setNumThreads(1)
 from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import Float32MultiArray, MultiArrayDimension, MultiArrayLayout
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy

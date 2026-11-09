@@ -52,6 +52,12 @@ def generate_launch_description():
         description='true: the policy computes and logs actions but does not command the hand'
     )
 
+    use_fp16_arg = DeclareLaunchArgument(
+        'use_fp16',
+        default_value='true',
+        description='Run the cube detector in fp16 on the GPU (faster); false for fp32'
+    )
+
     model_path_arg = DeclareLaunchArgument(
         'model_path',
         default_value='',
@@ -97,6 +103,7 @@ def generate_launch_description():
         policy_arg,
         dry_run_arg,
         model_path_arg,
+        use_fp16_arg,
         hand_to_tag_x_arg,
         hand_to_tag_y_arg,
         hand_to_tag_z_arg,
@@ -119,6 +126,7 @@ def launch_setup(context, *args, **kwargs):
     policy_file = LaunchConfiguration('policy').perform(context)
     dry_run = LaunchConfiguration('dry_run').perform(context).lower() == 'true'
     model_path = LaunchConfiguration('model_path').perform(context)
+    use_fp16 = LaunchConfiguration('use_fp16').perform(context).lower() == 'true'
     hand_to_tag_x = float(LaunchConfiguration('hand_to_tag_x').perform(context))
     hand_to_tag_y = float(LaunchConfiguration('hand_to_tag_y').perform(context))
     hand_to_tag_z = float(LaunchConfiguration('hand_to_tag_z').perform(context))
@@ -244,7 +252,8 @@ def launch_setup(context, *args, **kwargs):
             parameters=[{
                 'camera_name': camera_name,
                 'model_path': os.path.expanduser(model_path),
-                'show_windows': False
+                'show_windows': False,
+                'use_fp16': use_fp16,
             }]
         )
     else:

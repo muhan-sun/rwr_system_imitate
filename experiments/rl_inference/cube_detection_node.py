@@ -82,6 +82,7 @@ class CubeDetectionNode(Node):
         self.declare_parameter("ransac_reprojection_error",3.0)  # 3 pixels is reasonable for noisy keypoints
         self.declare_parameter("ransac_confidence", 0.99)
         self.declare_parameter("min_inliers", 3)
+        self.declare_parameter("use_fp16", True)  # fp16 autocast for the detector (GPU only)
 
         # Get parameter values
         model_path = self.get_parameter("model_path").value
@@ -92,6 +93,7 @@ class CubeDetectionNode(Node):
         self.kpt_order = list(self.get_parameter("keypoint_order").value)
         self.show_windows = bool(self.get_parameter("show_windows").value)
         self.cube_frame = self.get_parameter("cube_frame_id").value
+        self.use_fp16 = bool(self.get_parameter("use_fp16").value) and torch.cuda.is_available()
         self.use_kalman = bool(self.get_parameter("use_kalman_filter").value)
         self.kalman_q = float(self.get_parameter("kalman_process_noise").value)
         self.kalman_r = float(self.get_parameter("kalman_measurement_noise").value)
@@ -252,8 +254,11 @@ class CubeDetectionNode(Node):
         if torch.cuda.is_available():
             rgb_tensor = rgb_tensor.cuda()
 
-        with torch.no_grad():
+        # fp16 autocast on the GPU: roughly halves the Mask R-CNN inference time
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=self.use_fp16):
             output = self.model.get_detections([rgb_tensor])[0]
+        if output is not None:
+            output = {k: (v.float() if torch.is_tensor(v) and v.is_floating_point() else v) for k, v in output.items()}
 
         is_failure = False
         if output is None or len(output["keypoints"]) == 0:
