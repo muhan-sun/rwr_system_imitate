@@ -16,7 +16,8 @@ Command line usage:
         calibration:=/path/to/camera_extrinsics.npy \
         model_path:=/path/to/pose_estimation/finetuned_models/maskrcnn-finetuned_lightning_new_adamw.ckpt \
         policy:=/path/to/exported/policy.pt \
-        enable_hand_controller:=true
+        enable_hand_controller:=true \
+        wrist_lock_deg:=15 goal_ang_vel:=2.0 csv_log_path:=~/strong_1250_try1.csv
 """
 
 import os
@@ -49,6 +50,24 @@ def generate_launch_description():
         'dry_run',
         default_value='false',
         description='true: the policy computes and logs actions but does not command the hand'
+    )
+
+    wrist_lock_deg_arg = DeclareLaunchArgument(
+        'wrist_lock_deg',
+        default_value='',
+        description='Hold the wrist at this angle (deg), ignoring the policy. Empty: the policy controls the wrist'
+    )
+
+    goal_ang_vel_arg = DeclareLaunchArgument(
+        'goal_ang_vel',
+        default_value='2.0',
+        description='Goal angular velocity about +z (rad/s); trained on [1.5, 2.5]'
+    )
+
+    csv_log_path_arg = DeclareLaunchArgument(
+        'csv_log_path',
+        default_value='',
+        description='Non-empty: log observations, commands and cube pose to this CSV'
     )
 
     model_path_arg = DeclareLaunchArgument(
@@ -95,6 +114,9 @@ def generate_launch_description():
         calibration_arg,
         policy_arg,
         dry_run_arg,
+        wrist_lock_deg_arg,
+        goal_ang_vel_arg,
+        csv_log_path_arg,
         model_path_arg,
         hand_to_tag_x_arg,
         hand_to_tag_y_arg,
@@ -117,6 +139,12 @@ def launch_setup(context, *args, **kwargs):
     calibration_file = LaunchConfiguration('calibration').perform(context)
     policy_file = LaunchConfiguration('policy').perform(context)
     dry_run = LaunchConfiguration('dry_run').perform(context).lower() == 'true'
+    wrist_lock_deg_str = LaunchConfiguration('wrist_lock_deg').perform(context).strip()
+    wrist_lock_deg = float(wrist_lock_deg_str) if wrist_lock_deg_str else float('nan')
+    goal_ang_vel = float(LaunchConfiguration('goal_ang_vel').perform(context))
+    csv_log_path = LaunchConfiguration('csv_log_path').perform(context)
+    if csv_log_path:
+        csv_log_path = os.path.abspath(os.path.expanduser(csv_log_path))
     model_path = LaunchConfiguration('model_path').perform(context)
     hand_to_tag_x = float(LaunchConfiguration('hand_to_tag_x').perform(context))
     hand_to_tag_y = float(LaunchConfiguration('hand_to_tag_y').perform(context))
@@ -260,6 +288,9 @@ def launch_setup(context, *args, **kwargs):
             parameters=[{
                 'policy_ckpt_path': os.path.expanduser(policy_file),
                 'dry_run': dry_run,
+                'wrist_lock_deg': wrist_lock_deg,
+                'goal_ang_vel': goal_ang_vel,
+                'csv_log_path': csv_log_path,
                 'hand_config_path': os.path.join(
                     get_package_share_directory('hand_control'),
                     'orca', 'configs', 'orcahand_v2', 'right', 'config.yaml'
