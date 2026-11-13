@@ -7,5 +7,7 @@ logs/chirp_v2/
 *.ckpt
 *.pth.tar
 
-bags/
+bags/*
+# small demo rosbags we share; everything else in bags/ stays local
+!bags/shared/
 Policy/
