@@ -92,8 +92,11 @@ ros2 service call /right/hand/estop std_srvs/srv/SetBool "{data: true}"
 **Terminal 4: record a rosbag** (start it just before the real run)
 
 ```bash
-ros2 bag record -o bags/palmaxis_6000_try1 /right/hand/policy_output /right/hand/joint_position_from_motor /right/hand/joint_velocity_from_motor /tf /tf_static
+ros2 bag record -o bags/palmaxis_6000_try1 /right/hand/policy_output /right/hand/joint_position_from_motor /right/hand/joint_velocity_from_motor /right/joint_states /right/motor_sensed/joint_states /tf /tf_static
 ```
+
+`/right/joint_states` is the commanded pose and `/right/motor_sensed/joint_states` the measured pose, both as
+`sensor_msgs/JointState` with joint names (published by the hand controller launch for RViz).
 
 Use a new name for each run (`try2`, ...): `ros2 bag record` won't overwrite an existing folder.
 
