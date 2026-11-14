@@ -58,9 +58,11 @@ class CameraListener:
         self.fx, self.fy, self.cx, self.cy = None, None, None, None
 
         # Subscribe to camera image stream (BEST_EFFORT for low latency)
+        # depth=1: only the latest frame is kept. With a deeper queue, frames pile up while the
+        # (single-threaded) node runs inference and it then processes frames that are ~300 ms old.
         self.sub = parent_node.create_subscription(
-            Image, self.camera_topic, self.recv_im, 
-            QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT, 
+            Image, self.camera_topic, self.recv_im,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, 
                       history=HistoryPolicy.KEEP_LAST, durability=DurabilityPolicy.VOLATILE)
         )
         

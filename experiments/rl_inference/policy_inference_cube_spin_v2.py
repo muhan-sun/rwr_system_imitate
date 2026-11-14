@@ -2,16 +2,19 @@
 # -*- coding: utf-8 -*-
 """
 Policy Inference Node for the ORCA v2 hand - runs an rsl_rl policy trained in faive_lab
-(task orca-v2-inhand-repose-v0, proprioception only) on the real hand.
+(tasks orca-v2-inhand-repose-wristlock-*; with use_cube_pose:=true the *-cube-v0 tasks, which observe the cube pose)
+on the real hand.
 
 The policy is the TorchScript file that faive_lab's play.py exports (logs/rsl_rl/orca_v2_repose/<run>/exported/policy.pt);
 it includes the observation normalisation, so it takes the raw observation vector.
 
 Every 1/policy_hz seconds:
 1. Read the hand's joint positions and velocities (radians, in the order of the hand's config.yaml joint_ids)
-2. Build the policy observation exactly as in the simulation (USD joint order, 74 values):
+2. Build the policy observation exactly as in the simulation (USD joint order, 82 values, 74 without the cube pose):
        joint_pos       joint positions normalised to [-1, 1] over the joint limits
        joint_vel       joint velocities * 0.2
+       cube_pose       cube position, quaternion (w, x, y, z) and valid flag in the forearm frame, as the task's
+                       TrackerCubePose (only with use_cube_pose:=true)
        goal_command    [0, 0, -0.05, 0, 0, angular velocity about z]
        last_action     the policy's previous raw output
        last_joint_cmd  the previous joint position command (radians)
@@ -20,8 +23,9 @@ Every 1/policy_hz seconds:
 4. Publish the joint position command on /right/hand/policy_output, which hand_control_node executes (unless dry_run)
 
 Subtask 2 (exteroception): every step the node also reads the cube pose from TF (hand_root -> cube, published by
-cube_spin_v2.launch.py and cube_detection_node) and converts it to object_pos / object_quat as in the simulation. They are
-logged, but not part of the observation (commented out in process_once).
+cube_spin_v2.launch.py and cube_detection_node) and converts it to the frame of the simulated robot's root link
+(right_forearm). With no fresh pose the policy gets the last pose with valid = 0, and before the first detection the
+cube's start pose with valid = 0. With use_cube_pose:=false (proprioceptive policies) the pose is only logged.
 
 The joint limits, observation order and scales below must match the training task (orca_v2_repose_env_cfg.py).
 
@@ -70,7 +74,24 @@ JOINT_LIMITS_USD_DEG = {
     "thumb_mcp": (-25.0, 100.0),
     "thumb_dip": (-15.0, 107.0),
 }
-OBS_DIM = 17 + 17 + 6 + 17 + 17
+OBS_DIM_PROPRIO = 17 + 17 + 6 + 17 + 17  # 74
+OBS_DIM_CUBE = OBS_DIM_PROPRIO + 8       # 82: + cube pos (3), quat w, x, y, z (4), valid (1)
+
+# The policy sees the cube in the frame of the simulated robot's root link, right_forearm (TrackerCubePose).
+# TF gives hand_root -> cube, and hand_root -> forearm is 90 deg about x with no offset (orcahand_v2.urdf.xacro, joint
+# hand_root_fixed), so forearm_T_cube = FOREARM_T_HAND_ROOT @ hand_root_T_cube.
+FOREARM_T_HAND_ROOT = np.eye(4)
+FOREARM_T_HAND_ROOT[:3, :3] = Rotation.from_euler("x", -90.0, degrees=True).as_matrix()
+
+# Before the first detection: the middle of the task's reset range for the position, (0, 0, -0.02) in the env frame,
+# converted to the forearm frame with the robot's default root pose in the env (pos (0.0004, 0.1512, -0.0187),
+# quat w, x, y, z (-0.2607, 0.9654, 0, 0)). Training resets the cube to a random orientation, so no orientation is more
+# correct than another: identity in the forearm frame.
+_ENV_T_FOREARM = np.eye(4)
+_ENV_T_FOREARM[:3, :3] = Rotation.from_quat([0.9654, 0.0, 0.0, -0.2607]).as_matrix()  # scipy order x, y, z, w
+_ENV_T_FOREARM[:3, 3] = (0.0004, 0.1512, -0.0187)
+CUBE_START_POS = tuple((np.linalg.inv(_ENV_T_FOREARM) @ np.array([0.0, 0.0, -0.02, 1.0]))[:3])
+CUBE_START_QUAT = (1.0, 0.0, 0.0, 0.0)  # w, x, y, z
 
 
 class PolicyInferenceNodeV2(Node):
@@ -85,6 +106,7 @@ class PolicyInferenceNodeV2(Node):
         self.declare_parameter("velocity_obs_scale", 0.2)  # joint_vel observation scale in the task
         self.declare_parameter("goal_ang_vel", 2.0)        # rad/s about z; trained on w in [1.5, 2.5], always +z (fixed_direction=1.0)
         self.declare_parameter("goal_flip_period_s", 0.0)  # > 0: flip the spin direction every this many seconds (-z is outside training)
+        self.declare_parameter("use_cube_pose", True)      # true: 82-value policy with the cube pose (*-cube-v0); false: 74
         self.declare_parameter("dry_run", False)           # true: compute and log actions, but do not command the hand
         self.declare_parameter("log_period_s", 1.0)        # print the observation summary this often (0: never)
         self.declare_parameter("csv_log_path", "")         # non-empty: log observations and commands to this CSV
@@ -93,7 +115,7 @@ class PolicyInferenceNodeV2(Node):
         # Frame IDs
         self.declare_parameter("hand_frame_id", "hand_root")
         self.declare_parameter("cube_frame_id", "cube")
-        self.declare_parameter("cube_pose_timeout_s", 0.5)  # an older cube pose counts as not tracked
+        self.declare_parameter("cube_pose_timeout_s", 0.2)  # an older cube pose counts as not tracked; set to the measured latency + 0.05 s
 
         self.policy_ckpt_path = self.get_parameter("policy_ckpt_path").value
         self.policy_hz = float(self.get_parameter("policy_hz").value)
@@ -101,6 +123,8 @@ class PolicyInferenceNodeV2(Node):
         self.velocity_obs_scale = float(self.get_parameter("velocity_obs_scale").value)
         self.goal_flip_period_s = float(self.get_parameter("goal_flip_period_s").value)
         self.dry_run = bool(self.get_parameter("dry_run").value)
+        self.use_cube_pose = bool(self.get_parameter("use_cube_pose").value)
+        self.obs_dim = OBS_DIM_CUBE if self.use_cube_pose else OBS_DIM_PROPRIO
         self.log_period_s = float(self.get_parameter("log_period_s").value)
         self.hand_frame = self.get_parameter("hand_frame_id").value
         self.cube_frame = self.get_parameter("cube_frame_id").value
@@ -127,9 +151,10 @@ class PolicyInferenceNodeV2(Node):
             raise ValueError("Set policy_ckpt_path to the exported policy.pt (faive_lab logs/.../exported/policy.pt)")
         self.policy = torch.jit.load(self.policy_ckpt_path, map_location="cpu").eval()
         with torch.no_grad():
-            out = self.policy(torch.zeros(1, OBS_DIM))
+            out = self.policy(torch.zeros(1, self.obs_dim))
         assert out.shape[-1] == 17, f"policy outputs {out.shape[-1]} actions, expected 17"
-        self.get_logger().info(f"Loaded policy {self.policy_ckpt_path} ({OBS_DIM} observations -> 17 actions)")
+        self.get_logger().info(f"Loaded policy {self.policy_ckpt_path} ({self.obs_dim} observations -> 17 actions"
+                               f"{', with the cube pose' if self.use_cube_pose else ', cube pose only logged'})")
 
         # ========== ROS2 Publishers and Subscribers ==========
         self.hand_pub = self.create_publisher(Float32MultiArray, self.get_parameter("command_topic").value, 10)
@@ -139,7 +164,8 @@ class PolicyInferenceNodeV2(Node):
         # ========== TF2 Listener ==========
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        self.last_object_quat = None
+        self.object_pos = np.array(CUBE_START_POS, dtype=np.float32)    # last known pose, held while the cube is not tracked
+        self.object_quat = np.array(CUBE_START_QUAT, dtype=np.float32)
 
         # ========== State (USD order) ==========
         self.current_joint_pos = None  # robot order, radians
@@ -157,7 +183,7 @@ class PolicyInferenceNodeV2(Node):
         if csv_log_path:
             self.csv_file = open(csv_log_path, "w", newline="")
             self.csv_writer = csv.writer(self.csv_file)
-            self.csv_writer.writerow(["time"] + [f"obs_{i}" for i in range(OBS_DIM)]
+            self.csv_writer.writerow(["time"] + [f"obs_{i}" for i in range(self.obs_dim)]
                                      + [f"cmd_{name}" for name in self.joint_order_usd]
                                      + ["cube_x", "cube_y", "cube_z", "cube_qw", "cube_qx", "cube_qy", "cube_qz"])
 
@@ -214,39 +240,27 @@ class PolicyInferenceNodeV2(Node):
             self.get_logger().info(f"Spin direction flipped: goal angular velocity {self.goal_command[5]:+.2f} rad/s")
 
         # === cube pose (Subtask 2) ===
-        object_pos, object_quat = None, None  # stay None while the cube is not tracked
+        tracked = False  # the detector only publishes after a detection, so a lost cube shows up as an old stamp
         hand_T_cube, stamp = self.lookup_transform_from_tf(self.hand_frame, self.cube_frame)
         if hand_T_cube is not None and now - stamp <= self.cube_pose_timeout_s:
-            # If in your simulation environment you use `mdp.root_pos_w` for the cube position,
-            # you need to represent your cube position in the simulator's world frame.
-            # Read your robot position from the env cfg and set the obs_T_hand accordingly.
-            # Here: robot init_state pos (0.0004, 0.1512, -0.0187), rot (w, x, y, z) (-0.2607, 0.9654, 0, 0) of the
-            # root link right_forearm, and hand_root -> forearm 90 deg about x (orcahand_v2.urdf.xacro): 120.2 deg about x.
-            # If your simulator observes the cube relative to the hand instead, note that the robot's root link is
-            # forearm, not hand_root: use forearm_T_hand_root (90 deg about -x) @ hand_T_cube.
-            obs_T_hand = np.array([
-                [1.0,  0.0,     0.0,     0.0004],
-                [0.0, -0.5034, -0.8641,  0.1512],
-                [0.0,  0.8641, -0.5034, -0.0187],
-                [0.0,  0.0,     0.0,     1.0],
-            ])
-            obs_T_cube = obs_T_hand @ hand_T_cube
+            # the frame of the simulated robot's root link (right_forearm), as TrackerCubePose in the task
+            obs_T_cube = FOREARM_T_HAND_ROOT @ hand_T_cube
 
-            object_pos = obs_T_cube[:3, 3].astype(np.float32)
+            self.object_pos = obs_T_cube[:3, 3].astype(np.float32)
             # Convert quaternion from ROS (x,y,z,w) to policy (w,x,y,z)
             x, y, z, w = Rotation.from_matrix(obs_T_cube[:3, :3]).as_quat()
             object_quat = np.array([w, x, y, z], dtype=np.float32)
             # q and -q are the same rotation; the simulation's quaternion changes continuously, so keep the previous sign
-            if self.last_object_quat is not None and np.dot(object_quat, self.last_object_quat) < 0:
+            if np.dot(object_quat, self.object_quat) < 0:
                 object_quat = -object_quat
-            self.last_object_quat = object_quat
+            self.object_quat = object_quat
+            tracked = True
 
         # === observation, in the task's order ===
         obs = np.concatenate([
             self.normalize(joint_pos_usd),
             joint_vel_usd * self.velocity_obs_scale,
-            # object_pos,
-            # object_quat,
+            *([self.object_pos, self.object_quat, [float(tracked)]] if self.use_cube_pose else []),
             self.goal_command,
             self.last_action_usd,
             self.last_joint_cmd_usd,
@@ -270,14 +284,13 @@ class PolicyInferenceNodeV2(Node):
 
         if not self.dry_run:
             self.hand_pub.publish(numpy_to_float32_multiarray(target_usd[self.usd_to_robot_idx]))
-        tracked = object_pos is not None
         if self.csv_writer is not None:
-            cube = np.concatenate([object_pos, object_quat]).tolist() if tracked else [float("nan")] * 7
+            cube = np.concatenate([self.object_pos, self.object_quat]).tolist() if tracked else [float("nan")] * 7
             self.csv_writer.writerow([now - self.start_time] + obs.tolist() + target_usd.tolist() + cube)
         if self.log_period_s > 0 and now - self.last_log_time >= self.log_period_s:
             self.last_log_time = now
             norm = self.normalize(joint_pos_usd)
-            cube = (f"pos {np.round(object_pos, 3)} quat {np.round(object_quat, 2)}" if tracked else "not tracked")
+            cube = (f"pos {np.round(self.object_pos, 3)} quat {np.round(self.object_quat, 2)}" if tracked else "not tracked")
             self.get_logger().info(
                 "joint_pos (normalised): " + " ".join(f"{n}={v:+.2f}" for n, v in zip(self.joint_order_usd, norm))
                 + f" | |action| max {np.abs(action_usd).max():.2f} | cube {cube}"

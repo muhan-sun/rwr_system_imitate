@@ -36,7 +36,8 @@ def generate_launch_description():
     # ===== Calibration and Policy Arguments =====
     calibration_arg = DeclareLaunchArgument(
         'calibration',
-        default_value='',
+        default_value=os.path.join(
+            get_package_share_directory('experiments'), 'rl_inference', 'camera_extrinsics.npy'),
         description='Path to camera calibration file (cam_T_tag as .npy)'
     )
     
@@ -61,13 +62,25 @@ def generate_launch_description():
     goal_ang_vel_arg = DeclareLaunchArgument(
         'goal_ang_vel',
         default_value='2.0',
-        description='Goal angular velocity about +z (rad/s); trained on [1.5, 2.5]'
+        description='Goal angular velocity about +z (rad/s); use the training range (fast: 1.8-3.0, e.g. 2.4; fast5: 3.0-5.0, e.g. 4.0)'
+    )
+
+    use_cube_pose_arg = DeclareLaunchArgument(
+        'use_cube_pose',
+        default_value='true',
+        description='true: 82-value policy that observes the cube pose (*-cube-v0 tasks); false: 74-value proprioceptive policy'
     )
 
     csv_log_path_arg = DeclareLaunchArgument(
         'csv_log_path',
         default_value='',
         description='Non-empty: log observations, commands and cube pose to this CSV'
+    )
+
+    use_fp16_arg = DeclareLaunchArgument(
+        'use_fp16',
+        default_value='true',
+        description='Run the cube detector in fp16 on the GPU (faster); false for fp32'
     )
 
     model_path_arg = DeclareLaunchArgument(
@@ -79,13 +92,13 @@ def generate_launch_description():
 
     # ===== Tag to Hand Transform Arguments =====
     # Pose of the tag seen from the mount (mount_T_tag): x/y/z along the mount's axes, roll/pitch/yaw of the tag relative to them
-    # NOTE: these defaults were measured for the ORCA v1b mount. Measure them again for your ORCA v2 setup.
-    hand_to_tag_x_arg = DeclareLaunchArgument('hand_to_tag_x', default_value='0.0')
-    hand_to_tag_y_arg = DeclareLaunchArgument('hand_to_tag_y', default_value='0.05')
-    hand_to_tag_z_arg = DeclareLaunchArgument('hand_to_tag_z', default_value='0.055')
-    hand_to_tag_roll_arg = DeclareLaunchArgument('hand_to_tag_roll', default_value='90')
-    hand_to_tag_pitch_arg = DeclareLaunchArgument('hand_to_tag_pitch', default_value='0')
-    hand_to_tag_yaw_arg = DeclareLaunchArgument('hand_to_tag_yaw', default_value='180')
+    # Tuned for the ORCA v2 mount (hand tilted ~30 deg) by overlaying the hand model on the camera image
+    hand_to_tag_x_arg = DeclareLaunchArgument('hand_to_tag_x', default_value='-0.014')
+    hand_to_tag_y_arg = DeclareLaunchArgument('hand_to_tag_y', default_value='-0.0452')
+    hand_to_tag_z_arg = DeclareLaunchArgument('hand_to_tag_z', default_value='0.41')
+    hand_to_tag_roll_arg = DeclareLaunchArgument('hand_to_tag_roll', default_value='60')
+    hand_to_tag_pitch_arg = DeclareLaunchArgument('hand_to_tag_pitch', default_value='-1')
+    hand_to_tag_yaw_arg = DeclareLaunchArgument('hand_to_tag_yaw', default_value='3')
     
     # ===== Camera Arguments =====
     camera_name_arg = DeclareLaunchArgument(
@@ -116,8 +129,10 @@ def generate_launch_description():
         dry_run_arg,
         wrist_lock_deg_arg,
         goal_ang_vel_arg,
+        use_cube_pose_arg,
         csv_log_path_arg,
         model_path_arg,
+        use_fp16_arg,
         hand_to_tag_x_arg,
         hand_to_tag_y_arg,
         hand_to_tag_z_arg,
@@ -142,10 +157,12 @@ def launch_setup(context, *args, **kwargs):
     wrist_lock_deg_str = LaunchConfiguration('wrist_lock_deg').perform(context).strip()
     wrist_lock_deg = float(wrist_lock_deg_str) if wrist_lock_deg_str else float('nan')
     goal_ang_vel = float(LaunchConfiguration('goal_ang_vel').perform(context))
+    use_cube_pose = LaunchConfiguration('use_cube_pose').perform(context).lower() == 'true'
     csv_log_path = LaunchConfiguration('csv_log_path').perform(context)
     if csv_log_path:
         csv_log_path = os.path.abspath(os.path.expanduser(csv_log_path))
     model_path = LaunchConfiguration('model_path').perform(context)
+    use_fp16 = LaunchConfiguration('use_fp16').perform(context).lower() == 'true'
     hand_to_tag_x = float(LaunchConfiguration('hand_to_tag_x').perform(context))
     hand_to_tag_y = float(LaunchConfiguration('hand_to_tag_y').perform(context))
     hand_to_tag_z = float(LaunchConfiguration('hand_to_tag_z').perform(context))
@@ -271,7 +288,8 @@ def launch_setup(context, *args, **kwargs):
             parameters=[{
                 'camera_name': camera_name,
                 'model_path': os.path.expanduser(model_path),
-                'show_windows': False
+                'show_windows': False,
+                'use_fp16': use_fp16,
             }]
         )
     else:
@@ -290,6 +308,7 @@ def launch_setup(context, *args, **kwargs):
                 'dry_run': dry_run,
                 'wrist_lock_deg': wrist_lock_deg,
                 'goal_ang_vel': goal_ang_vel,
+                'use_cube_pose': use_cube_pose,
                 'csv_log_path': csv_log_path,
                 'hand_config_path': os.path.join(
                     get_package_share_directory('hand_control'),
