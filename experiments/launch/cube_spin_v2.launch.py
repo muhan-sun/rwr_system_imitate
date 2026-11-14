@@ -92,13 +92,13 @@ def generate_launch_description():
 
     # ===== Tag to Hand Transform Arguments =====
     # Pose of the tag seen from the mount (mount_T_tag): x/y/z along the mount's axes, roll/pitch/yaw of the tag relative to them
-    # Tuned for the ORCA v2 mount (hand tilted ~30 deg) by overlaying the hand model on the camera image
-    hand_to_tag_x_arg = DeclareLaunchArgument('hand_to_tag_x', default_value='-0.014')
-    hand_to_tag_y_arg = DeclareLaunchArgument('hand_to_tag_y', default_value='-0.0452')
-    hand_to_tag_z_arg = DeclareLaunchArgument('hand_to_tag_z', default_value='0.41')
+    # Measured: tag 28.5 cm in front of and 28 cm below the mount (world), hand tilted 30 deg down, tag flat -> roll 60
+    hand_to_tag_x_arg = DeclareLaunchArgument('hand_to_tag_x', default_value='-0.009')
+    hand_to_tag_y_arg = DeclareLaunchArgument('hand_to_tag_y', default_value='-0.075')
+    hand_to_tag_z_arg = DeclareLaunchArgument('hand_to_tag_z', default_value='0.354')
     hand_to_tag_roll_arg = DeclareLaunchArgument('hand_to_tag_roll', default_value='60')
     hand_to_tag_pitch_arg = DeclareLaunchArgument('hand_to_tag_pitch', default_value='-1')
-    hand_to_tag_yaw_arg = DeclareLaunchArgument('hand_to_tag_yaw', default_value='3')
+    hand_to_tag_yaw_arg = DeclareLaunchArgument('hand_to_tag_yaw', default_value='1')
     
     # ===== Camera Arguments =====
     camera_name_arg = DeclareLaunchArgument(
