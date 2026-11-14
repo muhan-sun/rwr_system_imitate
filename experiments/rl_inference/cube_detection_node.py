@@ -8,10 +8,18 @@ This node performs the following tasks:
 2. Detects cube keypoints using MaskRCNN
 3. Estimates 6D pose of the cube using robust PnP (RANSAC + refinement)
 4. Publishes TF transformation: camera_frame → cube
+5. Publishes the unfiltered pose on ~/cube_pose_raw (for logging only)
 
 PUBLISHED TF FRAMES:
 ====================
     camera_frame → cube (dynamic, detected cube pose in camera frame)
+
+PUBLISHED TOPICS:
+=================
+    ~/cube_pose_raw (geometry_msgs/PoseStamped): the same detection in the same camera frame and with the same
+        stamp (image capture time), after the symmetry snap but before the Kalman / slerp filter. Nothing in the
+        pipeline subscribes to it; it is for recording and offline analysis (noise, filter lag, angular velocity).
+        Disable with publish_raw_pose:=false.
 
 The cube pose in world frame is computed by other nodes using the chain:
     world → tag (from launch file) → camera (via calibration) → cube (from this node)
@@ -24,7 +32,7 @@ import torch
 import rclpy
 from rclpy.node import Node
 
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from visualization_msgs.msg import Marker, MarkerArray
 import tf2_ros
 
@@ -75,6 +83,7 @@ class CubeDetectionNode(Node):
         
         # Visualization
         self.declare_parameter("publish_marker", True)
+        self.declare_parameter("publish_raw_pose", True)  # unfiltered pose on ~/cube_pose_raw, for logging
         self.declare_parameter("mesh_resource", "package://viz/models/dexcube/dex_cube_instanceable.dae")
         
         # Robust PnP parameters
@@ -99,6 +108,7 @@ class CubeDetectionNode(Node):
         self.kalman_r = float(self.get_parameter("kalman_measurement_noise").value)
         self.orientation_alpha = float(self.get_parameter("orientation_slerp_alpha").value)
         self.publish_marker = bool(self.get_parameter("publish_marker").value)
+        self.publish_raw_pose = bool(self.get_parameter("publish_raw_pose").value)
         self.mesh_resource = self.get_parameter("mesh_resource").value
         
         self.ransac_iters = int(self.get_parameter("ransac_iterations").value)
@@ -119,6 +129,8 @@ class CubeDetectionNode(Node):
         # ========== TF Broadcasting and Visualization ==========
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
         self.marker_pub = self.create_publisher(MarkerArray, "~/cube_markers", 1)
+        # Own topic, not /tf: the TF consumers (policy, RViz) keep seeing only the filtered cube frame
+        self.raw_pose_pub = self.create_publisher(PoseStamped, "~/cube_pose_raw", 10) if self.publish_raw_pose else None
         self.mesh_scale_xyz = (self.cube_L/0.06, self.cube_L/0.06, self.cube_L/0.06)  # Scale to actual size (mesh is 6cm)
 
         # ========== Processing Timer ==========
@@ -403,6 +415,20 @@ class CubeDetectionNode(Node):
                 quat = snap_to_cube_symmetry(quat, self.last_raw_quat)
             self.last_raw_quat = quat
             qx, qy, qz, qw = quat.tolist()
+
+            # Unfiltered pose, published before the filter below changes t_cam_cube and the quaternion
+            if self.raw_pose_pub is not None:
+                raw_pose = PoseStamped()
+                raw_pose.header.stamp = hdr.stamp
+                raw_pose.header.frame_id = f"{self.camera_name}_frame"
+                raw_pose.pose.position.x = float(t_cam_cube[0])
+                raw_pose.pose.position.y = float(t_cam_cube[1])
+                raw_pose.pose.position.z = float(t_cam_cube[2])
+                raw_pose.pose.orientation.x = float(qx)
+                raw_pose.pose.orientation.y = float(qy)
+                raw_pose.pose.orientation.z = float(qz)
+                raw_pose.pose.orientation.w = float(qw)
+                self.raw_pose_pub.publish(raw_pose)
 
             # === Optional Kalman filtering for pose ===
             if self.use_kalman:
